@@ -1,0 +1,179 @@
+- name: Configure PostgreSQL Master
+  hosts:
+    - host_db
+  become: yes
+  vars:
+    db_name: "telegrambot"
+    db_user: botuser
+    db_password: 12345
+    master_ip: "192.168.1.19"
+    repl_ip: "192.168.1.133"
+    replication_user: "repl_user"
+    replication_password: "12345"
+  tasks:
+      apt:
+        name:
+          - postgresql
+        state: present
+        update_cache: yes
+
+    - name: Configure pg_hba.conf for connection
+      lineinfile:
+        path: /etc/postgresql/15/main/pg_hba.conf
+        line: "host all postgres scram-sha-256"
+        insertafter: "local all postgres peer"
+        state: present
+      notify: Restart PostgreSQL
+
+    - name: Configure master postgresql.conf
+      template:
+        src: config-postgresql
+        dest: "/etc/postgresql/15/main/postgresql.conf"
+        owner: postgres
+        group: postgres
+        mode: 0644
+      notify: Restart PostgreSQL
+
+    - name: Create database user
+      community.postgresql.postgresql_user:
+        state: present
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        login_host: "{{ master_ip }}"
+
+    - name: Create replication user
+      postgresql_user:
+        name: "{{ replication_user }}"
+        password: "{{ replication_password }}"
+        role_attr_flags: "REPLICATION"
+        state: present
+
+    - name: Create database
+      postgresql_db:
+        name: "{{ db_name }}"
+        owner: "{{ db_user }}"
+        state: present
+
+    - name: Create tables in database
+      postgresql_query:
+        db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS emails (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) NOT NULL
+          ):
+          CREATE TABLE IF NOT EXISTS phone_numbers (
+            id SERIAL PRIMARY KEY,
+            phone VARCHAR(50) NOT NULL
+          );
+
+    - name: Configure master pg_hba.conf
+      lineinfile:
+        path: "/etc/postgresql/15/main/pg_hba.conf"
+        line: "host replication {{ replication_user }} 192.168.1.0/24 scram-sha-256"
+        insertafter: EOF
+      notify: Restart PostgreSQL
+
+  handlers:
+    - name: Restart PostgreSQL
+      service:
+        name: "postgresql"
+        state: restarted
+
+
+
+- name: Configure PostgreSQL Replica
+  hosts: host_db_repl
+  become: yes
+  vars:
+    replication_user: "repl_user"
+    replication_password: "12345"
+
+  tasks:
+
+    - name: Install PostgreSQL on slave server
+      apt:
+        name:
+          name: "postgresql"
+          state: present
+          update_cache: yes
+
+    - name: Stop PostgreSQL service
+      service:
+        name: "postgresql"
+        state: stopped
+
+    - name: Clear replica data directory
+      file:
+        path: "/var/lib/postgresql/15/main"
+        state: absent
+
+    - name: Perform base backup master
+      command: >
+        pg_basebackup -R -h {{ repl_ip }} -U {{ replication_user }} -D /var/lib/postgresql/15/main -P
+      environment:
+        PGPASSWORD: "{{ replication_password }}"
+
+    - name: Start PostgreSQL service
+      service:
+        name: "postgresql"
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Restart PostgreSQL
+      service:
+        name: "postgresql"
+        state: restarted
+
+
+
+- name: Deploy Telegram bot
+  hosts: host_bot
+  become: yes
+  vars:
+    work_dir: "/opt/devops_bot/bot"
+  tasks:
+
+  - name: Install Python and pip
+    apt:
+      name:
+        - git
+        - python3
+        - python3-venv
+        - python3-pip
+      state: present
+      update_cache: yes
+
+  - name: Clone GitHub Repository
+    git:
+      repo: "https://github.com/Hyperslava/PT_START_DevOps.git"
+      dest: "/opt"
+      version: devops
+      clone: yes
+      update: yes
+
+  - name: Create Python virtual environment
+    command: "python3 -m venv venv"
+    args:
+      chdir: "{{ work_dir }}"
+      creates: "{{ work_dir }}/venv"
+
+  - name: Upgrade pip
+    command: "{{ work_dir }}/venv/bin/python -m pip install --upgrade pip"
+    args:
+      chdir: "{{ work_dir }}"
+
+  - name: Install python requirements
+    pip:
+      requirements: "{{ work_dir }}/requirements.txt"
+      virtualenv: "{{ work_dir }}/venv"
+
+  - name: Run Telegram bot
+    command: "python3 bot.py"
+    args:
+      chdir: "{{ work_dir }}"
+    async: 45
+    poll: 0

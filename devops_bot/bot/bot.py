@@ -220,7 +220,16 @@ def getTextData(update: Update, context):
         '/get_df': 'df -h',
         '/get_free': 'free -h',
         '/get_w': 'w',
-        '/get_auths': 'last -n 10',
+        '/get_auths': (
+            "if command -v last >/dev/null 2>&1; then "
+            "last -n 10; "
+            "elif command -v journalctl >/dev/null 2>&1; then "
+            "journalctl -u ssh.service -u sshd.service -n 10 --no-pager; "
+            "elif [ -r /var/log/auth.log ]; then "
+            "tail -n 10 /var/log/auth.log; "
+            "else echo 'История авторизаций недоступна: last и системные журналы отсутствуют.'; "
+            "fi"
+        ),
         '/get_critical': 'journalctl -n 5 -p 2',
         '/get_ps': 'ps',
         '/get_services': 'service --status-all | grep "\[ + \]"',

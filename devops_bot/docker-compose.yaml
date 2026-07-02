@@ -1,45 +1,56 @@
 services:
   bot:
     image: "bot_image"
+    build: bot/
     depends_on:
       - db
     environment:
-      - TOKEN=$(TOKEN)
-      - RM_HOST=$(RM_HOST)
-      - RM_PORT=$(RM_PORT)
-      - RM_USER=$(RM_USER)
-      - RM_PASSWORD=$(RM_PASSWORD)
-      - DB_HOST=$(DB_HOST)
-      - DB_PORT=$(DB_PORT)
-      - DB_DATABASE=$(DB_DATABASE)
-      - DB_USER=$(DB_USER)
-      - DB_PASSWORD=$(DB_PASSWORD)
+      - TOKEN=${TOKEN}
+      - RM_HOST=${RM_HOST}
+      - RM_PORT=${RM_PORT}
+      - RM_USER=${RM_USER}
+      - RM_PASSWORD=${RM_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_REPL_HOST=db_repl
+      - DB_REPL_PORT=5432
+      - DB_REPL_USER=${DB_REPL_USER}
+      - DB_REPL_PASSWORD=${DB_REPL_PASSWORD}
     networks:
       - bot_network
     volumes:
       - ./logfile.txt:/app/logfile.txt
       - ./.my_env:/app/.env
+      - db_logs:/var/log/postgresql:ro
     restart: unless-stopped
 
   db:
     image: "db_image"
+    build: db/
     user: postgres
     environment:
-      - POSTGRES_DB=$(DB_DATABASE)
-      - POSTGRES_USER=$(DB_USER)
-      - POSTGRES_PASSWORD=$(DB_PASSWORD)
+      - POSTGRES_DB=${DB_DATABASE}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_SSL=on
       - POSTGRES_SSL_CERT_FILE=/etc/ssl/certs/ssl-cert-snakeoil.pem
       - POSTGRES_SSL_KEY_FILE=/etc/ssl/private/ssl-cert-snakeoil.key
       - POSTGRES_HOST_AUTH_METHOD="scram-sha-256"
     command: |
       postgres
-      -c archive_mode=on
-      -c archive_command='cp %p /oracle/pg_data/archive/%f'
       -c max_wal_senders=10
       -c wal_level=replica
       -c wal_log_hints=on
       -c log_replication_commands=on
+      -c logging_collector=on
+      -c log_destination=stderr
+      -c log_directory=/var/log/postgresql
+      -c log_filename=postgresql.log
+      -c log_rotation_age=0
+      -c log_rotation_size=0
       -c hot_standby=on
       -c max_replication_slots=10
       -c hot_standby_feedback=on
@@ -49,33 +60,46 @@ services:
       -c listen_addresses='*'
     volumes:
       - db_data:/var/lib/postgresql/data
+      - db_logs:/var/log/postgresql
     ports:
       - "5442:5432"
     restart: unless-stopped
+    networks:
+      - bot_network
 
   db_repl:
     image: "db_repl_image"
+    build: db_repl/
     depends_on:
       - db
     environment:
-      - PGUSER=$(DB_REPL_USER)
-      - PGPASSWORD=$(DB_REPL_PASSWORD)
+      - PGUSER=${DB_REPL_USER}
+      - PGPASSWORD=${DB_REPL_PASSWORD}
     command: |
       bash -c "
-      until pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot --host=192.168.1.129 --port=5442
-      do
-      echo 'Waiting for primary to connect...'
-      sleep 1s
-      done
-      echo 'Backup done, starting replica...'
+      chown -R postgres:postgres /var/lib/postgresql/data
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        find /var/lib/postgresql/data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        until gosu postgres pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot --host=db --port=5432
+        do
+          echo 'Base backup failed; cleaning partial data before retry...'
+          find /var/lib/postgresql/data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          sleep 1s
+        done
+        echo 'Backup done, starting replica...'
+      else
+        echo 'Existing replica data found, skipping base backup...'
+      fi
       chmod 0700 /var/lib/postgresql/data
-      postgres
+      exec gosu postgres postgres
       "
     volumes:
       - db_repl_data:/var/lib/postgresql/data
     ports:
       - "5443:5432"
     restart: unless-stopped
+    networks:
+      - bot_network
 
 networks:
   bot_network:
@@ -83,3 +107,4 @@ networks:
 volumes:
   db_data:
   db_repl_data:
+  db_logs:

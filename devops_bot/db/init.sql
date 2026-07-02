@@ -1,13 +1,3 @@
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'telegrambot') THEN
-        CREATE DATABASE telegrambot OWNER postgres;
-    END IF;
-END
-$$;
-
-\c telegrambot;
-
 CREATE TABLE IF NOT EXISTS phone_numbers (
     id SERIAL PRIMARY KEY,
     phone VARCHAR(20) NOT NULL
@@ -18,7 +8,11 @@ CREATE TABLE IF NOT EXISTS emails (
     email VARCHAR(255) NOT NULL
 );
 
-CREATE USER botuser WITH password '12345';
+GRANT SELECT, INSERT ON phone_numbers TO CURRENT_USER;
+GRANT SELECT, INSERT ON emails TO CURRENT_USER;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO CURRENT_USER;
 
-GRANT SELECT, INSERT ON phone_numbers TO botuser;
-GRANT SELECT, INSERT ON emails TO botuser;
+SELECT pg_create_physical_replication_slot('replication_slot')
+WHERE NOT EXISTS (
+    SELECT 1 FROM pg_replication_slots WHERE slot_name = 'replication_slot'
+);

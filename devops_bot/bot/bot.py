@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import io
 import paramiko
 import psycopg2
 
@@ -14,11 +15,16 @@ host = os.getenv('RM_HOST')
 port = os.getenv('RM_PORT')
 username = os.getenv('RM_USER')
 password = os.getenv('RM_PASSWORD')
-db_host = os.getenv('RM_HOST')
+db_host = os.getenv('DB_HOST')
 db_port = os.getenv('DB_PORT')
 db_database = os.getenv('DB_DATABASE')
 db_user = os.getenv('DB_USER')
 db_password = os.getenv('DB_PASSWORD')
+db_repl_host = os.getenv('DB_REPL_HOST', 'db_repl')
+db_repl_port = os.getenv('DB_REPL_PORT', '5432')
+db_repl_user = os.getenv('DB_REPL_USER', db_user)
+db_repl_password = os.getenv('DB_REPL_PASSWORD', db_password)
+db_log_path = os.getenv('DB_LOG_PATH', '/var/log/postgresql/postgresql.log')
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -250,10 +256,6 @@ def getFileData(update: Update, context):
     commands = {
         '/get_mpstat': ('mpstat > mpstat.txt', 'mpstat.txt', 'Информация о производительности системы'),
         '/get_ss': ('ss -tulpn > ports.txt', 'ports.txt', 'Список используемых портов'),
-        '/get_repl_data': (
-            f'echo {password} | sudo -S grep -i "replication" /var/log/postgresql/postgresql-*.log > repl_log.txt',
-              'repl_log.txt', 'Логи репликации PostgreSQL'
-              )
     }
     command = update.message.text
     update.message.reply_text('Подключение к машине...')
@@ -286,6 +288,35 @@ def getFileData(update: Update, context):
     finally:
         client.close()
         return ConversationHandler.END
+
+def getReplicationData(update: Update, context):
+    replication_markers = (
+        'replication command',
+        'replication slot',
+        'identify_system',
+        'start_replication',
+    )
+
+    try:
+        with open(db_log_path, 'r', encoding='utf-8', errors='replace') as log_file:
+            matching_lines = [
+                line for line in log_file
+                if any(marker in line.lower() for marker in replication_markers)
+            ]
+        content = ''.join(matching_lines[-1000:])
+        if not content:
+            content = 'В журнале пока нет команд репликации.\n'
+    except OSError as error:
+        content = f'Не удалось прочитать журнал PostgreSQL: {error}\n'
+
+    document = io.BytesIO(content.encode('utf-8'))
+    document.name = 'replication.log'
+    update.message.reply_document(
+        document=document,
+        caption='Логи потоковой репликации PostgreSQL'
+    )
+    return ConversationHandler.END
+
 
 def getAptListCommand(update: Update, context):
     update.message.reply_text('Введите имя установленного пакета, информацио о котором нужно получить, или "all", чтобы получить список всех установленных пакетов:')
@@ -391,7 +422,7 @@ def main():
     dp.add_handler(CommandHandler("get_ps", getTextData))
     dp.add_handler(CommandHandler("get_ss", getFileData))
     dp.add_handler(CommandHandler("get_services", getTextData))
-    dp.add_handler(CommandHandler("get_repl_data", getFileData))
+    dp.add_handler(CommandHandler("get_repl_data", getReplicationData))
     dp.add_handler(CommandHandler("get_emails", getDataFromDatabase))
     dp.add_handler(CommandHandler("get_phone_numbers", getDataFromDatabase))
     dp.add_handler(convHandlerFindPhoneNumbers)
